@@ -1,10 +1,10 @@
 {
-  "version": "1.1.1",
-  "url": "https://github.com/pdfkiln/pdfkiln/releases/download/1.1.1",
+  "version": "1.1.2",
+  "url": "https://github.com/pdfkiln/pdfkiln/releases/download/1.1.2",
   "sha256": {
-    "pdfkiln-1.1.1-linux-x64.tar.gz": "b477c3e7334e74d9b9601451d55362ee67a6b8f5bfdc8c03819f7892390e6d43",
-    "pdfkiln-1.1.1-linux-arm64.tar.gz": "ec06006dc5984c3bbf05dc5949b1a5a3dedc78b0bff508cde09520c2c5314b37",
-    "pdfkiln-1.1.1-macos-arm64.tar.gz": "78f70a6dd4f630df4ba34af32e3ee864c9f8ef068a4ffe7105d5bfcc236700af",
-    "pdfkiln-1.1.1-windows-x64.zip": "06cbcfeea4f33a50c3e874963bcd9949b8da9c441d048a633a0addf0f02fc756"
+    "pdfkiln-1.1.2-linux-x64.tar.gz": "5994e101a556af32632c4e18d738b4b781e3a2ce7f9430598c5d61fa3e5e1b8c",
+    "pdfkiln-1.1.2-linux-arm64.tar.gz": "1eab715e2d91ec21297f0a3846f8e89585b60af3083268a851c985f8ed31ddb3",
+    "pdfkiln-1.1.2-macos-arm64.tar.gz": "b378b22421c3d3ea41255ae92859ae5c9e8d9e15e9762f234ac98f73f5b7488c",
+    "pdfkiln-1.1.2-windows-x64.zip": "ce46fd38e65a288a1c64900501af5a31521fa33a682adef7dd94a10fd588765b"
   }
 }
