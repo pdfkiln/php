@@ -115,8 +115,8 @@ function track(string $dist, string $project, string $version): void
 {
     $projects = $dist . DIRECTORY_SEPARATOR . 'projects';
     $record = $projects . DIRECTORY_SEPARATOR . substr(hash('sha256', $project), 0, 16) . '.json';
-    $previous = is_file($record) ? (json_decode((string) @file_get_contents($record), true)['version'] ?? null) : null;
-    if (!is_string($previous)) $previous = null;
+    $data = is_file($record) ? json_decode((string) @file_get_contents($record), true) : null;
+    $previous = is_array($data) && isset($data['version']) && is_string($data['version']) ? $data['version'] : null;
     if ($previous === $version && (int) @filemtime($record) > time() - DAY) return;
     if (!is_dir($projects) && !@mkdir($projects, 0700, true) && !is_dir($projects)) return;
     $tmp = "$record." . bin2hex(random_bytes(4));
@@ -142,21 +142,24 @@ function clean(string $dist, ?string $previous): void
             continue;
         }
         $r = json_decode((string) @file_get_contents($record), true);
-        if (!is_string($r['path'] ?? null) || !is_string($r['version'] ?? null)) {
+        $path = is_array($r) && isset($r['path']) && is_string($r['path']) ? $r['path'] : null;
+        $version = is_array($r) && isset($r['version']) && is_string($r['version']) ? $r['version'] : null;
+        if ($path === null || $version === null) {
             // Unreadable: while it may still be a project's, nothing is cleaned.
             if ($age < 30 * DAY) return;
             @unlink($record);
             continue;
         }
-        $pins = @file_get_contents($r['path'] . DIRECTORY_SEPARATOR . 'pins.json');
-        $pinned = $pins === false ? null : (json_decode($pins, true)['version'] ?? null);
-        if (is_string($pinned)) {
+        $pins = @file_get_contents($path . DIRECTORY_SEPARATOR . 'pins.json');
+        $pinned = $pins === false ? null : json_decode($pins, true);
+        $pinned = is_array($pinned) && isset($pinned['version']) && is_string($pinned['version']) ? $pinned['version'] : null;
+        if ($pinned !== null) {
             $used[$pinned] = true;
-            $known[$r['version']] = true;
+            $known[$version] = true;
         } elseif ($age < 30 * DAY) {
-            $used[$r['version']] = true;
+            $used[$version] = true;
         } else {
-            $known[$r['version']] = true;
+            $known[$version] = true;
             @unlink($record);
         }
     }
@@ -178,13 +181,17 @@ function lastRun(string $dir, string $version, string $platform): int
 }
 
 // Renamed, then deleted: the version's folder is whole or gone, never half
-// there. What a running process still holds goes the next time.
-function discard(string $dist, string $dir): void
+// there. What a running process still holds goes the next time. False when
+// the folder could not be renamed.
+function discard(string $dist, string $dir): bool
 {
     $trash = $dist . DIRECTORY_SEPARATOR . 'delete-' . bin2hex(random_bytes(6));
-    if (@rename($dir, $trash)) removeTree($trash);
+    if (!@rename($dir, $trash)) return false;
+    removeTree($trash);
+    return true;
 }
 
+/** @param list<string> $cmd */
 function run(array $cmd): int
 {
     $p = proc_open($cmd, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes);
@@ -194,6 +201,7 @@ function run(array $cmd): int
 // Downloads, checks and unpacks the archive; another process doing the
 // same at the same time does no harm: each works in its own folder, the
 // first rename wins.
+/** @param array{version: string, url: string, sha256: array<string, string>} $pins */
 function install(array $pins, string $platform, string $dir): ?string
 {
     $file = "pdfkiln-{$pins['version']}-$platform" . ($platform === 'windows-x64' ? '.zip' : '.tar.gz');
@@ -210,6 +218,7 @@ function install(array $pins, string $platform, string $dir): ?string
     }
 }
 
+/** @param array{version: string, url: string, sha256: array<string, string>} $pins */
 function fetch(array $pins, string $file, string $sha, string $tmp, string $dir): ?string
 {
     $archive = $tmp . DIRECTORY_SEPARATOR . $file;
@@ -219,15 +228,28 @@ function fetch(array $pins, string $file, string $sha, string $tmp, string $dir)
         $hint = strncmp($pins['url'], 'https:', 6) === 0 && !\extension_loaded('openssl') ? ": PHP's openssl extension is not loaded" : '';
         return "cannot download {$pins['url']}/$file$hint";
     }
-    $out = fopen($archive, 'wb');
-    stream_copy_to_stream($in, $out);
+    $out = @fopen($archive, 'wb');
+    if (!$out) {
+        fclose($in);
+        return "cannot write $archive";
+    }
+    $got = @stream_copy_to_stream($in, $out);
+    $length = contentLength(stream_get_meta_data($in)['wrapper_data'] ?? null);
     fclose($in);
     fclose($out);
-    if (!hash_equals($sha, hash_file('sha256', $archive))) return "$file does not match its SHA-256: not used";
+    // Short of the length the server announced: the connection dropped, which the
+    // SHA-256 check below would report as a damaged archive.
+    if ($length !== null && (int) $got < $length) {
+        return sprintf('the download of %s stopped at %d of %d MB: run it again', $file, intdiv((int) $got, 1000000), intdiv($length, 1000000));
+    }
+    $hash = hash_file('sha256', $archive);
+    if ($hash === false) return "cannot read $archive";
+    if (!hash_equals($sha, $hash)) return "$file does not match its SHA-256: not used";
     // The system's tar unpacks both formats, links included (Windows 10 and
     // later have tar.exe).
     $tar = PHP_OS_FAMILY === 'Windows' ? (getenv('SystemRoot') ?: 'C:\\Windows') . '\\System32\\tar.exe' : 'tar';
-    $p = proc_open([$tar, '-xf', $archive, '-C', $tmp], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    $p = @proc_open([$tar, '-xf', $archive, '-C', $tmp], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($p)) return "cannot run $tar to unpack $file";
     $err = stream_get_contents($pipes[2]);
     if (proc_close($p) !== 0) return "cannot unpack $file: $err";
     unlink($archive);
@@ -235,29 +257,80 @@ function fetch(array $pins, string $file, string $sha, string $tmp, string $dir)
     return null;
 }
 
+// The Content-Length of the last answer, from the headers of an HTTP stream:
+// the answers to the redirects come first. Null when it has none.
+/** @param mixed $headers */
+function contentLength($headers): ?int
+{
+    if (!is_array($headers)) return null;
+    $length = null;
+    foreach ($headers as $line) {
+        if (!is_string($line)) continue;
+        if (strncasecmp($line, 'HTTP/', 5) === 0) $length = null;
+        elseif (preg_match('/^content-length:\s*(\d+)\s*$/i', $line, $m)) $length = (int) $m[1];
+    }
+    return $length;
+}
+
+// The pins of the release (pins.json): its version, the URL of its archives
+// and their SHA-256, or null when the file does not hold them.
+/**
+ * @param mixed $data
+ * @return array{version: string, url: string, sha256: array<string, string>}|null
+ */
+function pins($data): ?array
+{
+    if (!is_array($data)) return null;
+    $version = $data['version'] ?? null;
+    $url = $data['url'] ?? null;
+    $sums = $data['sha256'] ?? null;
+    if (!is_string($version) || !is_string($url) || !is_array($sums)) return null;
+    $sha256 = [];
+    foreach ($sums as $file => $sum) if (is_string($file) && is_string($sum)) $sha256[$file] = $sum;
+    return ['version' => $version, 'url' => $url, 'sha256' => $sha256];
+}
+
 // The path of the program `name` (wkhtmltopdf, wkhtmltoimage or pdfkiln),
 // downloaded first if needed:
 //   new Knp\Snappy\Pdf(\Pdfkiln\binary());
 function binary(string $name = 'wkhtmltopdf'): string
 {
-    $pins = json_decode((string) file_get_contents(__DIR__ . '/../pins.json'), true);
+    $pins = pins(json_decode((string) file_get_contents(__DIR__ . '/../pins.json'), true));
     $platform = platform();
     if (!$pins || !$platform) throw new \RuntimeException('pdfkiln: no build of PDFKiln for this system');
     $dist = cacheDir() . DIRECTORY_SEPARATOR . 'dist';
-    $dir = $dist . DIRECTORY_SEPARATOR . "{$pins['version']}-$platform";
     try {
         track($dist, dirname(__DIR__), $pins['version']);
     } catch (\Throwable $e) {
         // The cache stays as it is: never a reason to fail a conversion.
     }
+    return ensure($pins, $platform, $dist, $name);
+}
+
+// The program `name` of the pinned version in the cache `dist`, installed
+// first if needed. A version's folder left without it (an antivirus, a
+// cleaner of temporary files, a hand) is set aside before: install() cannot
+// replace a folder, and every call would download the archive again for
+// nothing.
+/** @param array{version: string, url: string, sha256: array<string, string>} $pins */
+function ensure(array $pins, string $platform, string $dist, string $name): string
+{
+    $dir = $dist . DIRECTORY_SEPARATOR . "{$pins['version']}-$platform";
     $exe = program($dir, $pins['version'], $platform, $name);
-    if (!is_file($exe)) {
-        $error = install($pins, $platform, $dir);
-        if ($error) throw new \RuntimeException("pdfkiln: $error");
+    if (is_file($exe)) return $exe;
+    if (file_exists($dir)) {
+        say("$dir has lost its $name program: it is installed again");
+        // Not renamed: held by a running program (Windows), unless another call
+        // set it aside first.
+        if (!discard($dist, $dir) && is_dir($dir)) throw new \RuntimeException("pdfkiln: $dir has no $name program and cannot be replaced: delete that folder");
     }
+    $error = install($pins, $platform, $dir);
+    if ($error) throw new \RuntimeException("pdfkiln: $error");
+    if (!is_file($exe)) throw new \RuntimeException("pdfkiln: $exe is missing after the install");
     return $exe;
 }
 
+/** @param list<string> $args */
 function launch(string $name, array $args): int
 {
     try {
